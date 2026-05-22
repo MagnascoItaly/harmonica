@@ -119,7 +119,23 @@ header p{font-size:.82rem;color:var(--muted);font-weight:300;letter-spacing:.06e
 .metro-btn{padding:5px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--surface2);color:var(--muted);font-family:'DM Mono',monospace;font-size:.75rem;cursor:pointer;transition:all .15s}
 .metro-btn:hover{border-color:var(--accent);color:var(--text)}
 .metro-btn.active{border-color:var(--accent);background:rgba(232,200,74,.15);color:var(--accent)}
-.sess-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+/* INSERIMENTO MANUALE */
+.manual-grid{display:block;margin-top:8px}
+.manual-row{display:flex;gap:4px;align-items:center;margin-bottom:4px}
+.manual-lbl{width:72px;min-width:72px;font-size:.63rem;color:var(--muted);text-align:right;padding-right:8px;font-family:'DM Sans',sans-serif}
+.manual-cells{display:flex;gap:4px;flex:1}
+.mcell{flex:1;min-width:0;height:36px;display:flex;align-items:center;justify-content:center;font-family:'DM Mono',monospace;font-size:.75rem;font-weight:600;border-radius:8px;border:1.5px solid transparent;cursor:pointer;transition:all .13s}
+.mcell:hover{transform:scale(1.1);filter:brightness(1.2)}
+.mcell:active{transform:scale(.95)}
+.mcell.blow{background:rgba(74,232,180,.1);color:var(--accent2);border-color:rgba(74,232,180,.3)}
+.mcell.draw{background:rgba(232,200,74,.1);color:var(--accent);border-color:rgba(232,200,74,.3)}
+.mcell.blowbend1{background:rgba(232,140,50,.1);color:#e88c32;border-color:rgba(232,140,50,.35)}
+.mcell.drawbend1{background:rgba(232,140,50,.1);color:#e88c32;border-color:rgba(232,140,50,.35)}
+.mcell.drawbend2{background:rgba(232,74,74,.1);color:#e84a4a;border-color:rgba(232,74,74,.35)}
+.mcell.drawbend3{background:rgba(139,90,43,.1);color:#8b5a2b;border-color:rgba(139,90,43,.35)}
+.mcell.empty{background:transparent;border-color:transparent;cursor:default;pointer-events:none}
+.manual-holes{display:flex;flex:1;border-radius:6px;padding:2px 0}
+.manual-hole-num{flex:1;min-width:0;height:22px;display:flex;align-items:center;justify-content:center;font-family:'Bebas Neue',sans-serif;font-size:.85rem;color:#fff}display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
 .sess-hdr h2{font-family:'Bebas Neue',sans-serif;font-size:1rem;letter-spacing:.12em;color:var(--muted)}
 .sess-list{display:flex;flex-direction:column;gap:6px}
 .sess-row{display:flex;align-items:center;gap:8px;padding:9px 14px;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;cursor:pointer;transition:all .15s}
@@ -209,6 +225,10 @@ header p{font-size:.82rem;color:var(--muted);font-weight:300;letter-spacing:.06e
   </div>
 </div>
 <div class="card">
+  <h2 class="section-label" id="manualTitle"></h2>
+  <div class="manual-grid" id="manualGrid"></div>
+</div>
+<div class="card">
   <h2 class="section-label" id="metroTitle"></h2>
   <div class="metro-beats" id="metroBeats"></div>
   <div class="metro-controls">
@@ -264,7 +284,7 @@ var TX = {
     undo:'↩ Annulla', redo:'↪ Ripristina', clearAll:'Cancella tutto',
     selected:'selezionate', del:'Elimina',
     copy:'Copia testo', pdf:'Esporta PDF', save:'Salva sessione',
-    metro:'Metronomo', metroTime:'Tempo:',
+    manual:'Inserimento manuale', metroTime:'Tempo:',
     sessions:'Sessioni salvate', newSess:'+ Nuova sessione',
     noSess:'Nessuna sessione', noNotes:'Nessuna nota ancora',
     promptName:'Nome sessione:', confirmDel:'Eliminare la sessione?',
@@ -285,7 +305,7 @@ var TX = {
     undo:'↩ Undo', redo:'↪ Redo', clearAll:'Clear all',
     selected:'selected', del:'Delete',
     copy:'Copy text', pdf:'Export PDF', save:'Save session',
-    metro:'Metronome', metroTime:'Time:',
+    manual:'Manual input', metroTime:'Time:',
     sessions:'Saved sessions', newSess:'+ New session',
     noSess:'No sessions', noNotes:'No notes yet',
     promptName:'Session name:', confirmDel:'Delete this session?',
@@ -332,7 +352,7 @@ function applyTx() {
   document.getElementById('copyBtn').textContent = t('copy');
   document.getElementById('pdfLbl').textContent = t('pdf');
   document.getElementById('saveBtn').textContent = t('save');
-  document.getElementById('metroTitle').textContent = t('metro');
+  document.getElementById('manualTitle').textContent = t('manual');
   document.getElementById('metroTimeLbl').textContent = t('metroTime');
   document.getElementById('sessTitle').textContent = t('sessions');
   document.getElementById('newSessBtn').textContent = t('newSess');
@@ -410,7 +430,7 @@ function setKey(i,btn) {
   btn.classList.add('active');
   currentKey=KEYS[i]; HMAP=buildMap(currentKey);
   document.getElementById('subTitle').textContent=t('sub')+' '+currentKey.name;
-  buildHarpVisual(); curMatch=null; lastStableMatch=null; highlight(null); setAddBtn(false,null);
+  buildHarpVisual(); buildManualGrid(); curMatch=null; lastStableMatch=null; highlight(null); setAddBtn(false,null);
 }
 
 function buildHarpVisual() {
@@ -784,7 +804,91 @@ function exportPDF() {
   var win=window.open('','_blank'); win.document.write(html); win.document.close(); win.onload=function(){win.print();};
 }
 
-// METRONOMO
+function addManualNote(note) {
+  snap(); tabList.push(copyNote(note)); render();
+}
+
+function buildManualGrid() {
+  var grid = document.getElementById('manualGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  var r = currentKey.root;
+  var isDark = document.body.classList.contains('dark');
+  var holeBg = isDark ? '#3a3f52' : '#6b7280';
+
+  function makeRow(lbl, cells) {
+    var wrap = document.createElement('div'); wrap.className = 'manual-row';
+    var l = document.createElement('div'); l.className = 'manual-lbl'; l.textContent = lbl;
+    var c = document.createElement('div'); c.className = 'manual-cells';
+    for (var i = 0; i < cells.length; i++) c.appendChild(cells[i]);
+    wrap.appendChild(l); wrap.appendChild(c); return wrap;
+  }
+  function makeCell(note) {
+    var el = document.createElement('div');
+    if (!note) { el.className = 'mcell empty'; el.textContent = ''; return el; }
+    el.className = 'mcell ' + note.dir;
+    el.textContent = mn(note.midi);
+    el.title = note.sym + note.hole + ' — ' + mn(note.midi);
+    el.onclick = (function(n) { return function() { addManualNote(n); }; })(note);
+    return el;
+  }
+
+  // Costruisci le note per ogni foro
+  var holes = [];
+  for (var i = 0; i < 10; i++) {
+    var h = i + 1;
+    holes.push({
+      blow:     {midi:r+BASE_BLOW[i], hz:midi2hz(r+BASE_BLOW[i]), hole:h, dir:'blow',     sym:'↑',    semis:0, blowbend:false, cents:0},
+      draw:     {midi:r+BASE_DRAW[i], hz:midi2hz(r+BASE_DRAW[i]), hole:h, dir:'draw',     sym:'↓',    semis:0, blowbend:false, cents:0},
+      bb1:      BASE_BB1[i]!=null ? {midi:r+BASE_BB1[i], hz:midi2hz(r+BASE_BB1[i]), hole:h, dir:'blowbend1', sym:"↑'",   semis:1, blowbend:true,  cents:0} : null,
+      db1:      BASE_DB1[i]!=null ? {midi:r+BASE_DB1[i], hz:midi2hz(r+BASE_DB1[i]), hole:h, dir:'drawbend1', sym:"↓'",   semis:1, blowbend:false, cents:0} : null,
+      db2:      BASE_DB2[i]!=null ? {midi:r+BASE_DB2[i], hz:midi2hz(r+BASE_DB2[i]), hole:h, dir:'drawbend2', sym:"↓''",  semis:2, blowbend:false, cents:0} : null,
+      db3:      BASE_DB3[i]!=null ? {midi:r+BASE_DB3[i], hz:midi2hz(r+BASE_DB3[i]), hole:h, dir:'drawbend3', sym:"↓'''", semis:3, blowbend:false, cents:0} : null,
+    });
+  }
+
+  // Riga blow bends
+  var bb1Cells = [];
+  for (var i = 0; i < 10; i++) bb1Cells.push(makeCell(holes[i].bb1));
+  grid.appendChild(makeRow(t('rowBB'), bb1Cells));
+
+  // Riga blow
+  var blowCells = [];
+  for (var i = 0; i < 10; i++) blowCells.push(makeCell(holes[i].blow));
+  grid.appendChild(makeRow(t('rowBlow'), blowCells));
+
+  // Fori numerati
+  var holeRow = document.createElement('div'); holeRow.className = 'manual-row';
+  var hLbl = document.createElement('div'); hLbl.className = 'manual-lbl'; hLbl.textContent = 'Foro';
+  var hWrap = document.createElement('div'); hWrap.className = 'manual-holes manual-cells'; hWrap.style.background = holeBg;
+  for (var i = 0; i < 10; i++) {
+    var hn = document.createElement('div'); hn.className = 'manual-hole-num'; hn.textContent = i+1; hWrap.appendChild(hn);
+  }
+  holeRow.appendChild(hLbl); holeRow.appendChild(hWrap); grid.appendChild(holeRow);
+
+  // Riga draw
+  var drawCells = [];
+  for (var i = 0; i < 10; i++) drawCells.push(makeCell(holes[i].draw));
+  grid.appendChild(makeRow(t('rowDraw'), drawCells));
+
+  // Bend rows
+  var bendRows = [
+    {key:'db1', lbl:t('rowDB1')},
+    {key:'db2', lbl:t('rowDB2')},
+    {key:'db3', lbl:t('rowDB3')}
+  ];
+  for (var b = 0; b < bendRows.length; b++) {
+    var br = bendRows[b];
+    var hasAny = false;
+    for (var i = 0; i < 10; i++) { if (holes[i][br.key]) { hasAny = true; break; } }
+    if (!hasAny) continue;
+    var cells = [];
+    for (var i = 0; i < 10; i++) cells.push(makeCell(holes[i][br.key]));
+    grid.appendChild(makeRow(br.lbl, cells));
+  }
+}
+
+
 var metroBpm=80, metroBeats=4, metroCurrent=0, metroRunning=false, metroTimer=null, metroACtx=null, metroFeel='straight';
 
 function getMetroCtx() { if(!metroACtx) metroACtx=new(window.AudioContext||window.webkitAudioContext)(); return metroACtx; }
@@ -866,6 +970,7 @@ setTheme(savedTheme);
 buildKeyBtns();
 HMAP=buildMap(currentKey);
 buildHarpVisual();
+buildManualGrid();
 buildMetroBeats();
 setupLongPress('bpmDown',function(){ bpmChange(-1); });
 setupLongPress('bpmUp',function(){ bpmChange(1); });
