@@ -363,7 +363,7 @@
 <body class="light">
 
 <div class="top-bar">
-  <div class="version-badge">v1.2</div>
+  <div class="version-badge">v1.3</div>
   <div class="toggle-pill">
     <button id="langIt" class="active" onclick="setLang('it')">IT</button>
     <button id="langEn" onclick="setLang('en')">EN</button>
@@ -876,16 +876,48 @@ const inTuneBadge = document.getElementById('inTuneBadge');
 const HISTORY_LEN = 120;
 let pitchHistory = [];
 
+// ── Smoothing state ──────────────────────────────────────────
+// Circular buffer of raw frequency readings (in cents from A4)
+const SMOOTH_BUF_SIZE = 8;       // median over last N valid readings
+let smoothBuf = [];               // stores raw midiExact values
+
+// Hold: keep last good note visible for a short time after signal drops
+const HOLD_MS    = 180;           // ms to hold the last note after silence
+let holdTimer    = null;
+let lastGoodMidi = null;
+let lastGoodDiff = null;
+let lastGoodHist = null;
+
+// UI throttle: update display at most every N ms to avoid flicker
+const UI_INTERVAL_MS = 60;
+let lastUiUpdate = 0;
+
+// Stability gate: only accept a new MIDI note if it stays stable for N frames
+const STABILITY_FRAMES = 3;
+let stableCandidate     = null;
+let stableCandidateCnt  = 0;
+let committedMidi       = null;   // the midi note currently displayed
+
+// RMS silence threshold — slightly higher than before to ignore mic noise
+const RMS_THRESHOLD = 0.018;
+// ─────────────────────────────────────────────────────────────
+
 micBtn.addEventListener('click', async()=>micActive?stopMic():await startMic());
 
 async function startMic() {
   try {
     micStream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
     const ctx=getCtx(); const src=ctx.createMediaStreamSource(micStream);
-    analyser=ctx.createAnalyser(); analyser.fftSize=4096; src.connect(analyser);
+    analyser=ctx.createAnalyser();
+    analyser.fftSize=4096;
+    analyser.smoothingTimeConstant=0.6;   // built-in WebAudio temporal smoothing
+    src.connect(analyser);
     micActive=true; micBtn.classList.add('active');
     micBtn.querySelector('span').textContent=t('micOn');
     statusText.textContent=t('micListen');
+    // Reset smoothing state
+    smoothBuf=[]; holdTimer=null; lastGoodMidi=null;
+    stableCandidate=null; stableCandidateCnt=0; committedMidi=null;
     detectPitch();
   } catch(e){ statusText.textContent=t('micDenied'); }
 }
@@ -893,10 +925,12 @@ async function startMic() {
 function stopMic() {
   if(micStream) micStream.getTracks().forEach(t=>t.stop());
   if(pitchRafId) cancelAnimationFrame(pitchRafId);
+  if(holdTimer)  clearTimeout(holdTimer);
   micActive=false; micBtn.classList.remove('active');
   micBtn.querySelector('span').textContent=t('micOff');
   statusText.textContent=t('micStart');
   pitchHistory=[];
+  smoothBuf=[]; lastGoodMidi=null; committedMidi=null;
   resetMeter(); drawHistory();
 }
 
@@ -911,27 +945,98 @@ function detectPitch() {
   const buf=new Float32Array(analyser.fftSize);
   function loop() {
     analyser.getFloatTimeDomainData(buf);
-    let rms=0; for(let i=0;i<buf.length;i++) rms+=buf[i]*buf[i]; rms=Math.sqrt(rms/buf.length);
-    if(rms<0.01){ resetMeter(); statusText.textContent=t('micPlay'); pitchHistory.push(null); if(pitchHistory.length>HISTORY_LEN) pitchHistory.shift(); drawHistory(); }
-    else { const f=autoCorrelate(buf,audioCtx.sampleRate); if(f>50&&f<2000) updateMeter(f); }
+
+    // ── RMS energy check ──
+    let rms=0;
+    for(let i=0;i<buf.length;i++) rms+=buf[i]*buf[i];
+    rms=Math.sqrt(rms/buf.length);
+
+    if(rms < RMS_THRESHOLD) {
+      // Silence detected — start hold timer if not already running
+      if(lastGoodMidi !== null && holdTimer === null) {
+        holdTimer = setTimeout(() => {
+          // Hold expired — reset display
+          holdTimer=null; lastGoodMidi=null; lastGoodDiff=null;
+          smoothBuf=[]; stableCandidate=null; stableCandidateCnt=0; committedMidi=null;
+          resetMeter();
+          statusText.textContent=t('micPlay');
+          pitchHistory.push(null);
+          if(pitchHistory.length>HISTORY_LEN) pitchHistory.shift();
+          drawHistory();
+        }, HOLD_MS);
+      } else if(lastGoodMidi === null) {
+        // Was already silent — keep pushing nulls to history
+        pitchHistory.push(null);
+        if(pitchHistory.length>HISTORY_LEN) pitchHistory.shift();
+        const now=performance.now();
+        if(now-lastUiUpdate>UI_INTERVAL_MS){ drawHistory(); lastUiUpdate=now; }
+        statusText.textContent=t('micPlay');
+      }
+      pitchRafId=requestAnimationFrame(loop);
+      return;
+    }
+
+    // Sound detected — cancel any pending hold timer
+    if(holdTimer){ clearTimeout(holdTimer); holdTimer=null; }
+
+    // ── Raw frequency via autocorrelation ──
+    const f=autoCorrelate(buf,audioCtx.sampleRate);
+    if(f < 50 || f > 2000){ pitchRafId=requestAnimationFrame(loop); return; }
+
+    const rawMidiExact = 69 + 12 * Math.log2(f / A4);
+
+    // ── Circular median buffer (smoothing) ──
+    smoothBuf.push(rawMidiExact);
+    if(smoothBuf.length > SMOOTH_BUF_SIZE) smoothBuf.shift();
+
+    // Compute median of buffer
+    const sorted=[...smoothBuf].sort((a,b)=>a-b);
+    const midiExact=sorted[Math.floor(sorted.length/2)];
+
+    // ── Stability gate: only switch displayed note if stable for N frames ──
+    const nm = Math.round(midiExact);
+    if(nm !== stableCandidate){ stableCandidate=nm; stableCandidateCnt=1; }
+    else { stableCandidateCnt++; }
+
+    // Allow immediate update for the same committed note (just cents drift)
+    // Only require stability frames when jumping to a new note
+    const isNewNote = nm !== committedMidi;
+    if(isNewNote && stableCandidateCnt < STABILITY_FRAMES){
+      pitchRafId=requestAnimationFrame(loop);
+      return;
+    }
+    committedMidi=nm;
+
+    const diff=(midiExact-nm)*100;   // cents offset, -50..+50
+
+    // Cache for hold
+    lastGoodMidi=nm; lastGoodDiff=diff;
+
+    // ── Throttle UI updates ──
+    const now=performance.now();
+    if(now-lastUiUpdate >= UI_INTERVAL_MS){
+      lastUiUpdate=now;
+      updateMeter(midiExact, nm, diff);
+    }
+
     pitchRafId=requestAnimationFrame(loop);
   }
   loop();
 }
 
 function autoCorrelate(buf,sr) {
-  const SIZE=buf.length; let rms=0;
-  for(let i=0;i<SIZE;i++) rms+=buf[i]*buf[i]; rms=Math.sqrt(rms/SIZE);
-  if(rms<0.01) return -1;
+  const SIZE=buf.length;
   let r1=0,r2=SIZE-1;
   for(let i=0;i<SIZE/2;i++){if(Math.abs(buf[i])<0.2){r1=i;break;}}
   for(let i=1;i<SIZE/2;i++){if(Math.abs(buf[SIZE-i])<0.2){r2=SIZE-i;break;}}
   const s=buf.slice(r1,r2),len=s.length;
+  if(len<2) return -1;
   const c=new Array(len).fill(0);
   for(let i=0;i<len;i++) for(let j=0;j<len-i;j++) c[i]+=s[j]*s[j+i];
   let d=0; while(d<len-1&&c[d]>c[d+1])d++;
   let maxval=-1,maxpos=-1;
   for(let i=d;i<len;i++){if(c[i]>maxval){maxval=c[i];maxpos=i;}}
+  if(maxpos<1||maxpos>=len-1) return -1;
   let T0=maxpos;
   const x1=c[T0-1],x2=c[T0],x3=c[T0+1];
   const a=(x1+x3-2*x2)/2,b2=(x3-x1)/2;
@@ -941,12 +1046,7 @@ function autoCorrelate(buf,sr) {
 
 function freqToCents(f){ return 1200*Math.log2(f/A4)+6900; }
 
-function updateMeter(det) {
-  // Calcola midi corretto direttamente dalla frequenza
-  const midiExact = 69 + 12 * Math.log2(det / A4);
-  const nm   = Math.round(midiExact);          // midi intero più vicino
-  const diff = (midiExact - nm) * 100;         // cents di scostamento (-50..+50)
-
+function updateMeter(midiExact, nm, diff) {
   meterNote.textContent=noteLabel(nm); meterNote.style.opacity='1';
   meterCents.textContent=(diff>=0?'+':'')+diff.toFixed(1)+'¢';
   const pct=50+(diff/50)*45;
@@ -972,10 +1072,8 @@ function updateMeter(det) {
   if(selectedMidi!==null&&Math.abs(midiExact-selectedMidi)<=0.5)
     statusText.textContent=t('correct');
 
-  // sync highlight on box 3 — usa midi intero esatto
   highlightDetectedNote(nm, abs);
 
-  // push to history
   pitchHistory.push({cents:diff, color:histColor});
   if(pitchHistory.length>HISTORY_LEN) pitchHistory.shift();
   drawHistory();
